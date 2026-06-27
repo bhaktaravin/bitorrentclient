@@ -263,7 +263,7 @@ impl GameState {
             current_player: Player::Red,
             selected: None,
             highlights: vec![],
-            message: "Red: Pick a piece on the left, then click the bottom 4 rows (labels 4–1).".into(),
+            message: "Pick a piece on the left, then place it on rows 1–4 (bottom zone).".into(),
             last_move: None,
             setup_inventory: Self::full_inventory(),
             captured_red: vec![],
@@ -314,24 +314,24 @@ impl GameState {
                     self.place_blue_auto();
                     self.phase = Phase::Play;
                     self.current_player = Player::Red;
-                    self.message = "Battle begins! You move first (Red).".into();
+                    self.message = "The battle begins — you move first!".into();
                 }
                 GameMode::Hotseat => {
                     self.setup_inventory = Self::full_inventory();
                     self.phase = Phase::Setup(Player::Blue);
                     self.message =
-                        "Red is ready. Blue: place your pieces (rows 0–3, top). Pass the screen!"
+                        "Red is set. Blue — arrange your army on rows 7–10 (top). Pass the screen!"
                             .into();
                 }
             },
             Player::Blue => {
                 self.phase = Phase::Play;
                 self.current_player = Player::Red;
-                self.message = "Battle begins! Red moves first.".into();
+                self.message = "The battle begins — Red moves first!".into();
             }
         }
     }
- 
+
     pub fn setup_rows_for(player: Player) -> std::ops::Range<usize> {
         match player {
             Player::Red => 6..10,
@@ -353,16 +353,19 @@ impl GameState {
         let Phase::Setup(player) = self.phase else { return false; };
         let valid_rows = Self::setup_rows_for(player);
         if !valid_rows.contains(&row) {
-            self.message = format!("Place only in rows {}–{}.", valid_rows.start, valid_rows.end - 1);
+            self.message = format!(
+                "Place pieces only on rows {} (your side).",
+                setup_row_labels(player)
+            );
             return false;
         }
         if Board::is_lake(col, row) {
-            self.message = "Cannot place on water.".into();
+            self.message = "Can't place pieces on the lakes.".into();
             return false;
         }
         let remaining = *self.setup_inventory.get(&rank).unwrap_or(&0);
         if remaining == 0 {
-            self.message = format!("No {} left to place.", rank.full_name());
+            self.message = format!("No more {} pieces to place.", rank.full_name());
             return false;
         }
         // Return piece if cell was occupied
@@ -376,8 +379,9 @@ impl GameState {
             self.finish_setup_for(player);
         } else {
             self.message = format!(
-                "Placed {}. {} pieces left.",
+                "Placed {} at {} — {} remaining.",
                 rank.full_name(),
+                format_cell(col, row),
                 self.remaining_pieces()
             );
         }
@@ -419,14 +423,26 @@ impl GameState {
             if piece.player == self.current_player && piece.rank.is_movable() {
                 let moves = self.board.legal_moves(col, row);
                 if moves.is_empty() {
-                    self.message = format!("{} has no legal moves.", piece.rank.full_name());
+                    self.message = format!(
+                        "Your {} at {} has nowhere to go.",
+                        piece.rank.full_name(),
+                        format_cell(col, row)
+                    );
                     self.selected = None;
                     self.highlights.clear();
                 } else {
+                    let hint = if piece.rank == Rank::Scout && moves.len() > 1 {
+                        format!(" Scouts move in straight lines.")
+                    } else {
+                        String::new()
+                    };
                     self.message = format!(
-                        "Selected {} {}. {} moves available.",
-                        if self.current_player == Player::Red { "Red" } else { "Blue" },
-                        piece.rank.full_name(), moves.len()
+                        "{} at {} — {} destination{}.{}",
+                        piece.rank.full_name(),
+                        format_cell(col, row),
+                        moves.len(),
+                        if moves.len() == 1 { "" } else { "s" },
+                        hint
                     );
                     self.selected = Some((col, row));
                     self.highlights = moves;
@@ -434,7 +450,7 @@ impl GameState {
             } else {
                 self.selected = None;
                 self.highlights.clear();
-                self.message = "Select one of your movable pieces.".into();
+                self.message = "Choose one of your pieces to move.".into();
             }
         } else {
             self.selected = None;
@@ -463,13 +479,22 @@ impl GameState {
                     if defender.rank == Rank::Flag {
                         self.board.set(to_c, to_r, Some(Piece { revealed: true, ..attacker }));
                         self.phase = Phase::GameOver(self.current_player);
-                        self.message = format!("{:?} captures the Flag — wins!", self.current_player);
+                        self.message = format!(
+                            "Flag captured at {} — {:?} wins!",
+                            format_cell(to_c, to_r),
+                            self.current_player
+                        );
                     } else {
                         let mut winner = attacker;
                         winner.revealed = true;
                         self.board.set(to_c, to_r, Some(winner));
                         self.add_captured(defender.player, defender.rank);
-                        self.message = format!("{} beats {}!", last_move.attacker_rank.unwrap().full_name(), defender.rank.full_name());
+                        self.message = format!(
+                            "{} takes {} at {}!",
+                            last_move.attacker_rank.unwrap().full_name(),
+                            defender.rank.full_name(),
+                            format_cell(to_c, to_r)
+                        );
                     }
                 }
                 CombatResult::DefenderWins => {
@@ -478,18 +503,26 @@ impl GameState {
                     winner.revealed = true;
                     self.board.set(to_c, to_r, Some(winner));
                     self.add_captured(attacker.player, attacker.rank);
-                    self.message = format!("{} defeats {}!", defender_name, last_move.attacker_rank.unwrap().full_name());
+                    self.message = format!(
+                        "{} holds at {} — your {} is lost.",
+                        defender_name,
+                        format_cell(to_c, to_r),
+                        last_move.attacker_rank.unwrap().full_name()
+                    );
                 }
                 CombatResult::BothDie => {
                     self.add_captured(attacker.player, attacker.rank);
                     self.add_captured(defender.player, defender.rank);
-                    self.message = format!("Both {} and {} are eliminated!", attacker.rank.full_name(), defender.rank.full_name());
+                    self.message = format!(
+                        "Mutual destruction at {} — both pieces removed.",
+                        format_cell(to_c, to_r)
+                    );
                 }
             }
         } else {
-            // Simple move
+            let rank_name = attacker.rank.full_name();
             self.board.set(to_c, to_r, Some(attacker));
-            self.message = String::new();
+            self.message = format!("Moved {} to {}.", rank_name, format_cell(to_c, to_r));
         }
  
         self.last_move = Some(last_move);
@@ -512,6 +545,15 @@ impl GameState {
         let mode = self.mode;
         *self = GameState::new(mode);
     }
+}
+
+pub fn format_cell(col: usize, row: usize) -> String {
+    format!("{}{}", (b'A' + col as u8) as char, ROWS - row)
+}
+
+fn setup_row_labels(player: Player) -> String {
+    let range = GameState::setup_rows_for(player);
+    format!("{}–{}", ROWS - (range.end - 1), ROWS - range.start)
 }
 
 #[cfg(test)]
