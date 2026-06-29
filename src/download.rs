@@ -1,4 +1,6 @@
 use std::net::SocketAddr;
+use std::path::Path;
+use std::sync::mpsc::Sender;
 
 use anyhow::{Context, Result};
 use sha1::{Digest, Sha1};
@@ -7,11 +9,20 @@ use crate::peer::PeerSession;
 use crate::storage::TorrentStorage;
 use crate::torrent::TorrentMetadata;
 
+#[derive(Debug, Clone)]
+pub struct DownloadProgress {
+    pub current_piece: usize,
+    pub total_pieces: usize,
+    pub downloaded_bytes: u64,
+    pub total_bytes: u64,
+}
+
 pub fn download_torrent(
     metadata: &TorrentMetadata,
     peers: &[SocketAddr],
-    output_dir: &std::path::Path,
+    output_dir: &Path,
     peer_id: [u8; 20],
+    progress_tx: Option<Sender<DownloadProgress>>,
 ) -> Result<()> {
     let storage = TorrentStorage::prepare(metadata, output_dir)?;
     let piece_count = metadata.piece_count();
@@ -27,13 +38,6 @@ pub fn download_torrent(
             index,
         );
 
-        println!(
-            "Downloading piece {}/{} ({} bytes)...",
-            piece_index + 1,
-            piece_count,
-            length
-        );
-
         let piece_data = download_piece(metadata, peers, peer_id, index, length, expected_hash)
             .with_context(|| format!("failed to download piece {piece_index}"))?;
 
@@ -42,13 +46,16 @@ pub fn download_torrent(
             .with_context(|| format!("failed to write piece {piece_index} to disk"))?;
 
         downloaded_bytes += length;
-        let percent = (downloaded_bytes as f64 / total_bytes as f64) * 100.0;
-        println!(
-            "Verified piece {piece_index} ({downloaded_bytes}/{total_bytes} bytes, {percent:.2}%)"
-        );
+        if let Some(tx) = &progress_tx {
+            let _ = tx.send(DownloadProgress {
+                current_piece: piece_index + 1,
+                total_pieces: piece_count,
+                downloaded_bytes,
+                total_bytes,
+            });
+        }
     }
 
-    println!("Download complete: {}", storage.root().display());
     Ok(())
 }
 
@@ -68,13 +75,11 @@ fn download_piece(
                 match session.download_piece(piece_index, piece_length, expected_hash) {
                     Ok(data) => return Ok(data),
                     Err(err) => {
-                        eprintln!("peer {peer} failed on piece {piece_index}: {err:#}");
                         last_error = Some(err);
                     }
                 }
             }
             Err(err) => {
-                eprintln!("peer {peer} failed to connect: {err:#}");
                 last_error = Some(err);
             }
         }
